@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ReconOps — Bug Bounty Intelligence</title>
+  <meta name="description" content="Local bug bounty reconnaissance and vulnerability tracking system for advanced security researchers." />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="sidebar-brand">
+      <h1>ReconOps</h1>
+      <span>Bug Bounty Intelligence</span>
+    </div>
+
+    <div class="workspace-selector">
+      <label>Active Workspace</label>
+      <select id="ws-select">
+        <option value="">— Select Workspace —</option>
+      </select>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section">
+        <div class="nav-section-label">Overview</div>
+        <div class="nav-item active" data-page="workspaces" id="nav-workspaces">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          <span>Workspaces</span>
+        </div>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-label">Recon</div>
+        <div class="nav-item" data-page="scope" id="nav-scope">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+          <span>Scope</span>
+        </div>
+        <div class="nav-item" data-page="subdomains" id="nav-subdomains">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+          <span>Subdomains</span>
+        </div>
+        <div class="nav-item" data-page="httpx" id="nav-httpx">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          <span>HTTPX</span>
+        </div>
+        <div class="nav-item" data-page="tools" id="nav-tools">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.6-3.6a6 6 0 0 1-7.6 7.6l-6.8 6.8a2 2 0 1 1-2.8-2.8l6.8-6.8a6 6 0 0 1 7.6-7.6z"/></svg>
+          <span>Tools</span>
+        </div>
+        <div class="nav-item" data-page="modules" id="nav-modules">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          <span>Modules</span>
+        </div>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-label">Tracking</div>
+        <div class="nav-item" data-page="bugs" id="nav-bugs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+          <span>Bugs</span>
+        </div>
+        <div class="nav-item" data-page="checklist" id="nav-checklist">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          <span>Checklist</span>
+        </div>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <small>localhost:9000 · offline</small>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main id="main">
+    <div id="topbar">
+      <div>
+        <div id="topbar-title">Workspaces</div>
+        <div id="topbar-subtitle">manage bug bounty programs</div>
+      </div>
+      <div class="topbar-actions" id="topbar-actions"></div>
+    </div>
+    <div id="content">
+      <!-- Pages render here -->
+    </div>
+  </main>
+
+</div>
+
+<!-- Detail Panel (Subdomain) -->
+<div class="detail-panel" id="detail-panel">
+  <div class="detail-header">
+    <div>
+      <h2 id="detail-title">subdomain.example.com</h2>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px;" id="detail-subtitle"></div>
+    </div>
+    <button class="modal-close" id="detail-close" title="Close">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="detail-body">
+    <div class="tabs" style="padding:0 16px;">
+      <div class="tab active" data-dtab="httpx">HTTPX</div>
+      <div class="tab" data-dtab="dirsearch">Dirsearch</div>
+      <div class="tab" data-dtab="wayback">Wayback</div>
+      <div class="tab" data-dtab="params">Params</div>
+    </div>
+    <div style="padding:0 16px 16px;">
+      <div class="tab-panel active" id="dtab-httpx"></div>
+      <div class="tab-panel" id="dtab-dirsearch"></div>
+      <div class="tab-panel" id="dtab-wayback"></div>
+      <div class="tab-panel" id="dtab-params"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-title">Modal</div>
+      <button class="modal-close" id="modal-close-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- JS App -->
+<script src="/js/api.js"></script>
+<script src="/js/utils.js"></script>
+<script src="/js/modal.js"></script>
+<script src="/js/pages/workspaces.js"></script>
+<script src="/js/pages/scope.js"></script>
+<script src="/js/pages/subdomains.js"></script>
+<script src="/js/pages/httpx.js"></script>
+<script src="/js/pages/tools.js"></script>
+<script src="/js/pages/modules.js"></script>
+<script src="/js/pages/bugs.js"></script>
+<script src="/js/pages/checklist.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
