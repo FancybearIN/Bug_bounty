@@ -233,6 +233,21 @@ function parseWaybackOutput(raw) {
   return [...dedupe.values()];
 }
 
+function parseFfufJson(raw) {
+  let data;
+  try {
+    data = JSON.parse(String(raw || '').trim());
+  } catch {
+    return [];
+  }
+  const results = Array.isArray(data.results) ? data.results : [];
+  return results.map((r) => ({
+    path: '/' + String((r.input && r.input.FUZZ) ? r.input.FUZZ : ''),
+    status: Number(r.status) || 0,
+    size: Number(r.length) || 0,
+  })).filter((r) => r.status > 0);
+}
+
 function mergeUniqueEntries(existing, incoming, keyFn) {
   const map = new Map();
   for (const item of existing || []) map.set(keyFn(item), item);
@@ -598,6 +613,81 @@ router.post('/params', (req, res) => {
   }
 });
 
+router.post('/ffuf', (req, res) => {
+  const { subdomain_id } = req.body;
+  if (!subdomain_id) return res.status(400).json({ error: 'subdomain_id required' });
+
+  const db = getDb();
+  try {
+    const sd = getSubdomain(db, subdomain_id);
+    if (!sd) return res.status(404).json({ error: 'Subdomain not found' });
+
+    if (!isToolAvailable('ffuf')) {
+      return res.status(400).json({ error: 'ffuf is not installed' });
+    }
+
+    const targetId = sd.target_id || db.prepare("SELECT id FROM targets WHERE workspace_id=? AND type='domain' AND value=?").get(sd.workspace_id, sd.value)?.id;
+    if (!targetId) return res.status(400).json({ error: 'Target mapping missing for subdomain' });
+
+    const jobId = createJob(db, {
+      workspace_id: sd.workspace_id,
+      target_id: targetId,
+      subdomain_id: sd.id,
+      tool: 'ffuf',
+    });
+
+    const settings = db.prepare('SELECT enabled, config FROM tool_settings WHERE workspace_id=? AND tool=?').get(sd.workspace_id, 'ffuf');
+    if (settings && Number(settings.enabled) === 0) {
+      completeJob(db, jobId, 'failed', 'ffuf disabled in tool settings');
+      return res.status(400).json({ error: 'ffuf is disabled in this workspace', job_id: jobId });
+    }
+
+    const cfg = safeJsonParse(settings?.config || '{}', {});
+    const threads = Number(cfg.threads) > 0 ? String(Number(cfg.threads)) : '40';
+
+    const DEFAULT_WORDLIST = '/usr/share/wordlists/dirb/common.txt';
+    let wordlist = cfg.wordlist ? String(cfg.wordlist) : null;
+    if (!wordlist) {
+      if (fs.existsSync(DEFAULT_WORDLIST)) {
+        wordlist = DEFAULT_WORDLIST;
+      } else {
+        completeJob(db, jobId, 'failed', 'No wordlist configured for ffuf');
+        return res.status(400).json({ error: 'No wordlist configured for ffuf. Set a wordlist in tool settings.', job_id: jobId });
+      }
+    }
+
+    const args = [
+      '-u', `https://${sd.value}/FUZZ`,
+      '-w', wordlist,
+      '-json',
+      '-mc', '200,201,204,301,302,307,401,403',
+      '-t', threads,
+    ];
+
+    const extRaw = cfg.extensions ? String(cfg.extensions).trim() : '';
+    if (extRaw) {
+      const exts = extRaw.split(',').map((e) => e.trim()).filter(Boolean).map((e) => (e.startsWith('.') ? e : `.${e}`));
+      if (exts.length) args.push('-e', exts.join(','));
+    }
+
+    const output = runTool('ffuf', args);
+    const parsed = parseFfufJson(output);
+
+    const existing = safeJsonParse(sd.dirsearch_data || '[]', []);
+    const merged = mergeUniqueEntries(existing, parsed, (d) => `${d.path}:${d.status}:${d.size}`);
+    db.prepare('UPDATE subdomains SET dirsearch_data=? WHERE id=?').run(JSON.stringify(merged), sd.id);
+
+    appendJobLog(db, jobId, `[ffuf] matches=${parsed.length}`);
+    completeJob(db, jobId, 'completed', output);
+
+    res.json({ success: true, subdomain_id: Number(subdomain_id), imported: parsed.length, job_id: jobId });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'ffuf execution failed' });
+  } finally {
+    db.close();
+  }
+});
+
 router.post('/run-all-tools', (req, res) => {
   const { subdomain_id, tools } = req.body;
   if (!subdomain_id) return res.status(400).json({ error: 'subdomain_id required' });
@@ -626,6 +716,52 @@ router.post('/run-all-tools', (req, res) => {
     }
 
     res.json({ success: true, subdomain_id: Number(subdomain_id), jobs_created: createdJobs.length, job_ids: createdJobs });
+  } finally {
+    db.close();
+  }
+});
+
+router.post('/bulk-scan', (req, res) => {
+  const { target_id, tools } = req.body;
+  if (!target_id) return res.status(400).json({ error: 'target_id required' });
+
+  const db = getDb();
+  try {
+    const target = getTarget(db, target_id);
+    if (!target) return res.status(404).json({ error: 'Target not found' });
+
+    const ALLOWED_BULK_TOOLS = ['dirsearch', 'waybackurls', 'params', 'ffuf'];
+    const defaultTools = ['dirsearch', 'waybackurls', 'params'];
+    if (isToolAvailable('ffuf')) defaultTools.push('ffuf');
+
+    const selectedTools = Array.isArray(tools) && tools.length
+      ? tools.map((t) => String(t).trim().toLowerCase()).filter((t) => ALLOWED_BULK_TOOLS.includes(t))
+      : defaultTools;
+
+    const aliveSubdomains = db.prepare('SELECT id FROM subdomains WHERE target_id=? AND is_alive=1').all(target.id);
+    if (!aliveSubdomains.length) {
+      return res.json({ success: true, target_id: Number(target_id), subdomains_count: 0, jobs_created: 0, subdomain_ids: [], job_ids: [] });
+    }
+
+    const subdomain_ids = aliveSubdomains.map((s) => s.id);
+    const job_ids = [];
+    const insertJob = db.prepare("INSERT INTO jobs (workspace_id, target_id, subdomain_id, tool, status) VALUES (?, ?, ?, ?, 'pending')");
+
+    for (const sd of aliveSubdomains) {
+      for (const tool of selectedTools) {
+        const r = insertJob.run(target.workspace_id, target.id, sd.id, tool);
+        job_ids.push(Number(r.lastInsertRowid));
+      }
+    }
+
+    res.json({
+      success: true,
+      target_id: Number(target_id),
+      subdomains_count: aliveSubdomains.length,
+      jobs_created: job_ids.length,
+      subdomain_ids,
+      job_ids,
+    });
   } finally {
     db.close();
   }

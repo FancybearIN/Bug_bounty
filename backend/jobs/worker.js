@@ -1,5 +1,5 @@
 const { getDb } = require('../db/init');
-const { execFile } = require('node:child_process');
+const { execFile, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -7,8 +7,187 @@ const path = require('node:path');
 const POLL_INTERVAL_MS = 3000;
 const TOOL_TIMEOUT_MS = 60 * 1000;
 const HTTPX_BATCH_SIZE = 75;
+const RECON_TOOL_TIMEOUT_MS = 5 * 60 * 1000;
 
 let workerTimer = null;
+
+function isToolAvailable(bin) {
+  const result = spawnSync(bin, ['-h'], { stdio: 'ignore', timeout: 2500 });
+  return result.error?.code !== 'ENOENT';
+}
+
+function runToolCommandLong(bin, args) {
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { timeout: RECON_TOOL_TIMEOUT_MS, maxBuffer: 20 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (!err) {
+        resolve((stdout || '').toString());
+        return;
+      }
+      if (err.code === 'ENOENT') {
+        reject(new Error(`tool not installed: ${bin}`));
+        return;
+      }
+      const message = (stderr || err.message || '').toString().trim() || `tool execution failed: ${bin}`;
+      reject(new Error(message));
+    });
+  });
+}
+
+function parseDirsearchLines(raw) {
+  const rows = [];
+  const statusRegex = /\b(200|201|204|301|302|307|308|401|403|405|500)\b/;
+  const pathRegex = /\s(\/\S*)/;
+  const sizeRegex = /\b(\d+)\b(?!.*\b\d+\b)/;
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    const text = line.trim();
+    if (!text) continue;
+    const sm = statusRegex.exec(text);
+    if (!sm) continue;
+    const pathMatch = pathRegex.exec(text);
+    const sizeMatch = sizeRegex.exec(text);
+    rows.push({ path: pathMatch ? pathMatch[1] : '/', status: Number(sm[1]), size: sizeMatch ? Number(sizeMatch[1]) : 0 });
+  }
+  return rows;
+}
+
+function parseWaybackLines(raw) {
+  const out = [];
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    const url = line.trim();
+    if (!url.startsWith('http')) continue;
+    try {
+      const u = new URL(url);
+      out.push({ url, path: u.pathname || '/', has_params: [...u.searchParams.keys()].length > 0, params: [...new Set([...u.searchParams.keys()].map(String))] });
+    } catch {}
+  }
+  const dedupe = new Map();
+  for (const item of out) dedupe.set(item.url, item);
+  return [...dedupe.values()];
+}
+
+function parseFfufJsonOutput(raw) {
+  let data;
+  try { data = JSON.parse(String(raw || '').trim()); } catch { return []; }
+  const results = Array.isArray(data.results) ? data.results : [];
+  return results.map((r) => ({
+    path: '/' + String((r.input && r.input.FUZZ) ? r.input.FUZZ : ''),
+    status: Number(r.status) || 0,
+    size: Number(r.length) || 0,
+  })).filter((r) => r.status > 0);
+}
+
+function mergeUniqueByKey(existing, incoming, keyFn) {
+  const map = new Map();
+  for (const item of existing || []) map.set(keyFn(item), item);
+  for (const item of incoming || []) map.set(keyFn(item), item);
+  return [...map.values()];
+}
+
+async function runDirsearchJob(db, job) {
+  const sd = db.prepare('SELECT id, workspace_id, target_id, value, dirsearch_data FROM subdomains WHERE id=?').get(job.subdomain_id);
+  if (!sd) throw new Error('subdomain not found');
+  if (!isToolAvailable('dirsearch')) throw new Error('dirsearch not installed');
+
+  const settings = db.prepare('SELECT enabled, config FROM tool_settings WHERE workspace_id=? AND tool=?').get(sd.workspace_id, 'dirsearch');
+  if (settings && Number(settings.enabled) === 0) throw new Error('dirsearch disabled in tool settings');
+
+  const cfg = safeParseJson(settings?.config || '{}', {});
+  const threads = Number(cfg.threads) > 0 ? String(Number(cfg.threads)) : '20';
+  const wordlist = cfg.wordlist ? String(cfg.wordlist) : null;
+  const args = ['-u', `https://${sd.value}`, '--plain-text-report=-', '--threads', threads, '-q'];
+  if (wordlist) args.push('-w', wordlist);
+  if (Number(cfg.rate_limit) > 0) args.push('--max-rate', String(Number(cfg.rate_limit)));
+
+  const output = await runToolCommandLong('dirsearch', args);
+  const parsed = parseDirsearchLines(output);
+  const existing = safeParseJson(sd.dirsearch_data || '[]', []);
+  const merged = mergeUniqueByKey(existing, parsed.map((d) => ({ path: d.path, status: d.status, size: d.size })), (d) => `${d.path}:${d.status}:${d.size}`);
+  db.prepare('UPDATE subdomains SET dirsearch_data=? WHERE id=?').run(JSON.stringify(merged), sd.id);
+  return { imported: parsed.length };
+}
+
+async function runWaybackJob(db, job) {
+  const sd = db.prepare('SELECT id, workspace_id, target_id, value, wayback_data FROM subdomains WHERE id=?').get(job.subdomain_id);
+  if (!sd) throw new Error('subdomain not found');
+  if (!isToolAvailable('waybackurls')) throw new Error('waybackurls not installed');
+
+  const output = await runToolCommandLong('waybackurls', [sd.value]);
+  const parsed = parseWaybackLines(output);
+  const existing = safeParseJson(sd.wayback_data || '[]', []);
+  const merged = mergeUniqueByKey(existing, parsed, (d) => d.url);
+  db.prepare('UPDATE subdomains SET wayback_data=? WHERE id=?').run(JSON.stringify(merged), sd.id);
+  return { imported: parsed.length };
+}
+
+async function runParamsJob(db, job) {
+  const sd = db.prepare('SELECT id, workspace_id, target_id, value, params_data FROM subdomains WHERE id=?').get(job.subdomain_id);
+  if (!sd) throw new Error('subdomain not found');
+  if (!isToolAvailable('waybackurls')) throw new Error('waybackurls not installed (needed for params)');
+
+  const output = await runToolCommandLong('waybackurls', [sd.value]);
+  const parsedUrls = parseWaybackLines(output);
+
+  const paramsByEndpoint = new Map();
+  for (const item of parsedUrls) {
+    if (!item.has_params || !item.params.length) continue;
+    const key = item.path || '/';
+    if (!paramsByEndpoint.has(key)) paramsByEndpoint.set(key, new Set());
+    for (const p of item.params) paramsByEndpoint.get(key).add(String(p));
+  }
+
+  const discovered = [...paramsByEndpoint.entries()].map(([endpoint, set]) => ({ endpoint, method: ['GET'], params: [...set].sort((a, b) => a.localeCompare(b)) }));
+  const existing = safeParseJson(sd.params_data || '[]', []);
+  const mergedMap = new Map();
+  for (const item of existing) {
+    const key = String(item.endpoint || '/');
+    mergedMap.set(key, { endpoint: key, method: new Set(Array.isArray(item.method) ? item.method.map(String) : ['GET']), params: new Set(Array.isArray(item.params) ? item.params.map(String) : []) });
+  }
+  for (const item of discovered) {
+    const key = item.endpoint;
+    if (!mergedMap.has(key)) mergedMap.set(key, { endpoint: key, method: new Set(), params: new Set() });
+    const row = mergedMap.get(key);
+    for (const m of item.method) row.method.add(String(m));
+    for (const p of item.params) row.params.add(String(p));
+  }
+  const merged = [...mergedMap.values()].map((v) => ({ endpoint: v.endpoint, method: [...v.method].sort((a, b) => a.localeCompare(b)), params: [...v.params].sort((a, b) => a.localeCompare(b)) }));
+  db.prepare('UPDATE subdomains SET params_data=? WHERE id=?').run(JSON.stringify(merged), sd.id);
+  return { endpoints: discovered.length };
+}
+
+async function runFfufJob(db, job) {
+  const sd = db.prepare('SELECT id, workspace_id, target_id, value, dirsearch_data FROM subdomains WHERE id=?').get(job.subdomain_id);
+  if (!sd) throw new Error('subdomain not found');
+  if (!isToolAvailable('ffuf')) throw new Error('ffuf not installed');
+
+  const settings = db.prepare('SELECT enabled, config FROM tool_settings WHERE workspace_id=? AND tool=?').get(sd.workspace_id, 'ffuf');
+  if (settings && Number(settings.enabled) === 0) throw new Error('ffuf disabled in tool settings');
+
+  const cfg = safeParseJson(settings?.config || '{}', {});
+  const threads = Number(cfg.threads) > 0 ? String(Number(cfg.threads)) : '40';
+  const DEFAULT_WORDLIST = '/usr/share/wordlists/dirb/common.txt';
+  let wordlist = cfg.wordlist ? String(cfg.wordlist) : null;
+  if (!wordlist) {
+    if (fs.existsSync(DEFAULT_WORDLIST)) {
+      wordlist = DEFAULT_WORDLIST;
+    } else {
+      throw new Error('No wordlist configured for ffuf');
+    }
+  }
+
+  const args = ['-u', `https://${sd.value}/FUZZ`, '-w', wordlist, '-json', '-mc', '200,201,204,301,302,307,401,403', '-t', threads];
+  const extRaw = cfg.extensions ? String(cfg.extensions).trim() : '';
+  if (extRaw) {
+    const exts = extRaw.split(',').map((e) => e.trim()).filter(Boolean).map((e) => (e.startsWith('.') ? e : `.${e}`));
+    if (exts.length) args.push('-e', exts.join(','));
+  }
+
+  const output = await runToolCommandLong('ffuf', args);
+  const parsed = parseFfufJsonOutput(output);
+  const existing = safeParseJson(sd.dirsearch_data || '[]', []);
+  const merged = mergeUniqueByKey(existing, parsed, (d) => `${d.path}:${d.status}:${d.size}`);
+  db.prepare('UPDATE subdomains SET dirsearch_data=? WHERE id=?').run(JSON.stringify(merged), sd.id);
+  return { imported: parsed.length };
+}
 
 function runSubfinder(domain) {
   return runToolCommand('subfinder', ['-d', domain, '-silent']);
@@ -351,6 +530,19 @@ async function executeJob(job) {
     const target = db.prepare('SELECT value FROM targets WHERE id = ?').get(job.target_id);
     if (!target) throw new Error('target not found');
 
+    if (['dirsearch', 'waybackurls', 'params', 'ffuf'].includes(job.tool) && job.subdomain_id) {
+      logJobResult(db, job.id, 'run_tool', 'running', `Running ${job.tool} for subdomain ${job.subdomain_id}`);
+      let result;
+      if (job.tool === 'dirsearch') result = await runDirsearchJob(db, job);
+      else if (job.tool === 'waybackurls') result = await runWaybackJob(db, job);
+      else if (job.tool === 'params') result = await runParamsJob(db, job);
+      else if (job.tool === 'ffuf') result = await runFfufJob(db, job);
+      const output = `tool=${job.tool}\nsubdomain_id=${job.subdomain_id}\n${JSON.stringify(result)}`;
+      db.prepare("UPDATE jobs SET status='completed', output=?, finished_at=datetime('now') WHERE id=?").run(output, job.id);
+      logJobResult(db, job.id, 'pipeline', 'completed', 'Job completed', output);
+      return;
+    }
+
     if (job.tool === 'httpx') {
       logJobResult(db, job.id, 'run_tool', 'running', 'Running httpx in batches');
       const result = await executeHttpxJob(db, job);
@@ -404,7 +596,7 @@ function processNextJob() {
     const running = db.prepare("SELECT id FROM jobs WHERE status='running' LIMIT 1").get();
     if (running) return;
 
-    const pending = db.prepare("SELECT id, workspace_id, target_id, tool FROM jobs WHERE status='pending' ORDER BY id ASC LIMIT 1").get();
+    const pending = db.prepare("SELECT id, workspace_id, target_id, subdomain_id, tool FROM jobs WHERE status='pending' ORDER BY id ASC LIMIT 1").get();
     if (!pending) return;
 
     const claimed = db.prepare("UPDATE jobs SET status='running', started_at=COALESCE(started_at, datetime('now')) WHERE id=? AND status='pending'").run(pending.id);

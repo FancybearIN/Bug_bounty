@@ -125,6 +125,8 @@ const API = (() => {
     runWayback: (subdomainId) => req('POST', '/recon/wayback', { subdomain_id: subdomainId }),
     runParamsDiscovery: (subdomainId) => req('POST', '/recon/params', { subdomain_id: subdomainId }),
     runAllSubdomainTools: (subdomainId, tools) => req('POST', '/recon/run-all-tools', { subdomain_id: subdomainId, tools }),
+    runFfuf: (subdomainId) => req('POST', '/recon/ffuf', { subdomain_id: subdomainId }),
+    runBulkScan: (targetId, tools) => req('POST', '/recon/bulk-scan', { target_id: targetId, tools }),
     addParamIntelligenceManual: (b) => req('POST', '/recon/params/manual', b),
     getReconFlow: (wsId) => req('GET', `/recon/flow?workspace_id=${wsId}`),
     getAutoReconMode: (wsId) => req('GET', `/recon/auto-mode?workspace_id=${wsId}`),

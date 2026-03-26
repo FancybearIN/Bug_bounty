@@ -72,6 +72,25 @@ async function applyHttpxFilters() {
   }
 }
 
+async function runBulkScanFromPage() {
+  const targetId = document.getElementById('hx-target-id')?.value;
+  if (!targetId) {
+    toast('Select a target first', 'error');
+    return;
+  }
+  const statusEl = document.getElementById('bulk-scan-status');
+  if (statusEl) statusEl.textContent = 'Queuing jobs...';
+  try {
+    const result = await API.runBulkScan(targetId);
+    const msg = `${result.subdomains_count} alive subdomains → ${result.jobs_created} jobs created`;
+    if (statusEl) statusEl.textContent = msg;
+    toast(msg, 'success');
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '';
+    toast(e.message, 'error');
+  }
+}
+
 async function runDiscoveryFromHttpx() {
   const targetId = document.getElementById('hx-target-id')?.value;
   if (!targetId) {
@@ -266,6 +285,15 @@ async function renderHttpx() {
               <tr><td colspan="6" style="color:var(--text3);">Select target and apply filters</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title">Pipeline Automation</div>
+        <p style="color:var(--text3);font-size:12px;margin-bottom:10px;">Runs dirsearch, waybackurls, params (and ffuf if available) for all alive subdomains of the selected target. Jobs are queued and processed sequentially by the worker.</p>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" onclick="runBulkScanFromPage()">Run Bulk Scan</button>
+          <span id="bulk-scan-status" style="color:var(--text3);font-size:12px;"></span>
         </div>
       </div>`;
 

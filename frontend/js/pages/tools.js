@@ -20,10 +20,15 @@ async function renderTools() {
     const installedCount = tools.filter((t) => installed[t]).length;
     const enabledCount = tools.filter((t) => (byTool.get(t)?.enabled ?? true)).length;
 
+    const EXTENSIONS_TOOLS = new Set(['ffuf', 'dirsearch']);
+
     const rows = tools.map((tool) => {
       const row = byTool.get(tool);
       const enabled = row ? !!row.enabled : true;
       const cfg = row?.config || {};
+      const extField = EXTENSIONS_TOOLS.has(tool)
+        ? `<input class="form-control" id="tool-ext-${escHtml(tool)}" placeholder="php,html,js" value="${escHtml(String(cfg.extensions || ''))}" />`
+        : '<span style="color:var(--text3);">—</span>';
 
       return `
       <tr>
@@ -44,6 +49,7 @@ async function renderTools() {
         <td>
           <input class="form-control" id="tool-rate-${escHtml(tool)}" type="number" min="1" value="${escHtml(String(cfg.rate_limit || ''))}" />
         </td>
+        <td>${extField}</td>
         <td style="text-align:right;white-space:nowrap;">
           <button class="btn btn-primary btn-sm" onclick="saveToolConfig('${escHtml(tool)}')">Save</button>
         </td>
@@ -69,6 +75,7 @@ async function renderTools() {
                 <th>Wordlist</th>
                 <th>Threads</th>
                 <th>Rate Limit</th>
+                <th>Extensions</th>
                 <th></th>
               </tr>
             </thead>
@@ -96,10 +103,13 @@ function readToolConfigFromUI(tool) {
   const wordlist = document.getElementById(`tool-wordlist-${tool}`)?.value.trim() || '';
   const threads = Number(document.getElementById(`tool-threads-${tool}`)?.value || 0) || undefined;
   const rate_limit = Number(document.getElementById(`tool-rate-${tool}`)?.value || 0) || undefined;
+  const extensionsRaw = document.getElementById(`tool-ext-${tool}`)?.value.trim() || '';
+  const extensions = extensionsRaw || undefined;
   return {
     wordlist: wordlist || undefined,
     threads,
     rate_limit,
+    extensions,
   };
 }
 
