@@ -70,7 +70,7 @@ function parseFfufJsonOutput(raw) {
   try { data = JSON.parse(String(raw || '').trim()); } catch { return []; }
   const results = Array.isArray(data.results) ? data.results : [];
   return results.map((r) => ({
-    path: '/' + String((r.input && r.input.FUZZ) ? r.input.FUZZ : ''),
+    path: '/' + String((r.input && r.input.FUZZ) ? r.input.FUZZ : '').replace(/^\/+/, ''),
     status: Number(r.status) || 0,
     size: Number(r.length) || 0,
   })).filter((r) => r.status > 0);
@@ -86,6 +86,7 @@ function mergeUniqueByKey(existing, incoming, keyFn) {
 async function runDirsearchJob(db, job) {
   const sd = db.prepare('SELECT id, workspace_id, target_id, value, dirsearch_data FROM subdomains WHERE id=?').get(job.subdomain_id);
   if (!sd) throw new Error('subdomain not found');
+  if (!isValidDomain(sd.value)) throw new Error('invalid subdomain value');
   if (!isToolAvailable('dirsearch')) throw new Error('dirsearch not installed');
 
   const settings = db.prepare('SELECT enabled, config FROM tool_settings WHERE workspace_id=? AND tool=?').get(sd.workspace_id, 'dirsearch');
@@ -109,6 +110,7 @@ async function runDirsearchJob(db, job) {
 async function runWaybackJob(db, job) {
   const sd = db.prepare('SELECT id, workspace_id, target_id, value, wayback_data FROM subdomains WHERE id=?').get(job.subdomain_id);
   if (!sd) throw new Error('subdomain not found');
+  if (!isValidDomain(sd.value)) throw new Error('invalid subdomain value');
   if (!isToolAvailable('waybackurls')) throw new Error('waybackurls not installed');
 
   const output = await runToolCommandLong('waybackurls', [sd.value]);
@@ -122,6 +124,7 @@ async function runWaybackJob(db, job) {
 async function runParamsJob(db, job) {
   const sd = db.prepare('SELECT id, workspace_id, target_id, value, params_data FROM subdomains WHERE id=?').get(job.subdomain_id);
   if (!sd) throw new Error('subdomain not found');
+  if (!isValidDomain(sd.value)) throw new Error('invalid subdomain value');
   if (!isToolAvailable('waybackurls')) throw new Error('waybackurls not installed (needed for params)');
 
   const output = await runToolCommandLong('waybackurls', [sd.value]);
@@ -157,6 +160,7 @@ async function runParamsJob(db, job) {
 async function runFfufJob(db, job) {
   const sd = db.prepare('SELECT id, workspace_id, target_id, value, dirsearch_data FROM subdomains WHERE id=?').get(job.subdomain_id);
   if (!sd) throw new Error('subdomain not found');
+  if (!isValidDomain(sd.value)) throw new Error('invalid subdomain value');
   if (!isToolAvailable('ffuf')) throw new Error('ffuf not installed');
 
   const settings = db.prepare('SELECT enabled, config FROM tool_settings WHERE workspace_id=? AND tool=?').get(sd.workspace_id, 'ffuf');

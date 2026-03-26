@@ -242,7 +242,7 @@ function parseFfufJson(raw) {
   }
   const results = Array.isArray(data.results) ? data.results : [];
   return results.map((r) => ({
-    path: '/' + String((r.input && r.input.FUZZ) ? r.input.FUZZ : ''),
+    path: '/' + String((r.input && r.input.FUZZ) ? r.input.FUZZ : '').replace(/^\/+/, ''),
     status: Number(r.status) || 0,
     size: Number(r.length) || 0,
   })).filter((r) => r.status > 0);
@@ -621,6 +621,7 @@ router.post('/ffuf', (req, res) => {
   try {
     const sd = getSubdomain(db, subdomain_id);
     if (!sd) return res.status(404).json({ error: 'Subdomain not found' });
+    if (!isValidDomain(sd.value)) return res.status(400).json({ error: 'Invalid subdomain value' });
 
     if (!isToolAvailable('ffuf')) {
       return res.status(400).json({ error: 'ffuf is not installed' });
